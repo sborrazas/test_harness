@@ -13,7 +13,8 @@
 %% Test cases
 -export([timed_batch/1,
          sized_batch/1,
-         invalid_batch/1]).
+         invalid_batch/1,
+         invalid_batch_format/1]).
 
 %%--------------------------------------------------------------------
 %% COMMON TEST CALLBACK FUNCTIONS
@@ -29,7 +30,9 @@
 %%              for the suite.
 %%--------------------------------------------------------------------
 suite() ->
-  [{timetrap, {minutes,2}}].
+  [{timetrap, {minutes, 2}},
+   {require, {test_harness, [webserver_port,
+                             db_dir]}}].
 
 %%--------------------------------------------------------------------
 %% Function: init_per_suite(Config0) -> Config1
@@ -40,7 +43,10 @@ suite() ->
 %% Description: Initialization before the suite.
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-  {ok, _Started} = application:ensure_all_started(gun),
+  [application:set_env(test_harness, Name, Value) ||
+    {Name, Value} <- ct:get_config(test_harness)],
+  {ok, _GunStarted} = application:ensure_all_started(gun),
+  {ok, _TestHarnessStarted} = application:ensure_all_started(test_harness),
   Config.
 
 %%--------------------------------------------------------------------
@@ -65,8 +71,10 @@ end_per_suite(_Config) ->
 %% Description: Initialization before each test case.
 %%--------------------------------------------------------------------
 init_per_testcase(_Case, Config) ->
-  {ok, ConnPid} = gun:open("localhost", 4567),
+  WebserverPort = ct:get_config({test_harness, webserver_port}),
+  {ok, ConnPid} = gun:open("localhost", WebserverPort),
   {ok, _Protocol} = gun:await_up(ConnPid),
+  test_harness_db:delete_all(),
   [{connection, ConnPid} | Config].
 
 %%--------------------------------------------------------------------
@@ -97,22 +105,37 @@ end_per_testcase(_Case, Config) ->
 %%              are to be executed.
 %%--------------------------------------------------------------------
 all() ->
-  [invalid_batch,
-   sized_batch,
-   timed_batch].
+  [sized_batch,
+   timed_batch,
+   invalid_batch,
+   invalid_batch_format].
 
 %% helpers
-
 post_json(ConnPid, Body) ->
   StreamRef = gun:post(ConnPid, "/speeds", [], Body),
   gun:await(ConnPid, StreamRef).
 
 utc_time() ->
-  unicode:characters_to_binary(calendar:system_time_to_rfc3339(erlang:system_time(millisecond), [{unit, millisecond}, {offset, "Z"}])).
+  SysTime = erlang:system_time(millisecond),
+  FormattedTime = calendar:system_time_to_rfc3339(SysTime, [{unit, millisecond},
+                                                            {offset, "Z"}]),
+  unicode:characters_to_binary(FormattedTime).
 
 %%--------------------------------------------------------------------
 %% TEST CASES
 %%--------------------------------------------------------------------
+
+sized_batch(Config) ->
+  ConnPid = ?config(connection, Config),
+  lists:map(fun
+              (I) ->
+                Body = jiffy:encode(#{speed => I * 1.3, timestamp => utc_time()}),
+                {response, _, 200, _Headers} = post_json(ConnPid, Body)
+            end, lists:seq(1, 20)),
+  ct:print("One batch should have been written."),
+  Speeds = [#{<<"speed">> := 1.3}, #{<<"speed">> := 2.6} | _RestSpeed] =
+    test_harness_speeds_entity:list(),
+  19 = length(Speeds).
 
 timed_batch(Config) ->
   ConnPid = ?config(connection, Config),
@@ -122,17 +145,15 @@ timed_batch(Config) ->
                 {response, _, 200, _Headers} = post_json(ConnPid, Body)
             end, lists:seq(1, 3)),
   ct:print("Waiting 62 seconds for the batch to flush! Do not adjust your television."),
-  ct:sleep({seconds, 62}).
-
-sized_batch(Config) ->
-  ConnPid = ?config(connection, Config),
-  lists:map(fun
-              (I) ->
-                Body = jiffy:encode(#{speed => I * 1.3, timestamp => utc_time()}),
-                {response, _, 200, _Headers} = post_json(ConnPid, Body)
-            end, lists:seq(1, 20)),
-  ct:print("One batch should have been written.").
+  ct:sleep({seconds, 62}),
+  [#{<<"speed">> := 1.3}, #{<<"speed">> := 2.6} | _RestSpeed] =
+    test_harness_speeds_entity:list().
 
 invalid_batch(Config) ->
-    ConnPid = ?config(connection, Config),
-    {response, _, 400, _Headers} = post_json(ConnPid, <<"not json">>).
+  ConnPid = ?config(connection, Config),
+  {response, _, 400, _Headers} = post_json(ConnPid, <<"not json">>).
+
+invalid_batch_format(Config) ->
+  ConnPid = ?config(connection, Config),
+  Body = jiffy:encode(#{speed => <<"wrong!">>, timestamp => utc_time()}),
+  {response, _, 422, _Headers} = post_json(ConnPid, Body).

@@ -17,3 +17,5 @@ _build
 *.iml
 rebar3.crashdump
 *~
+config/test.config
+config/sys.config
