@@ -1,0 +1,17 @@
+{application, test_harness,
+ [{description, "Eleos coding challenge sample app"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, {test_harness_app, []}},
+  {applications, [
+                  kernel
+                  ,stdlib
+                  ,cowboy
+                  ,jiffy
+                  ,iso8601
+                 ]},
+  {env, []},
+  {modules, []},
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}]}.
